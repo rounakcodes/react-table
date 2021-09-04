@@ -41,8 +41,6 @@ Enjoy this library? Try them all! [React Query](https://github.com/tannerlinsley
 - Server-side/controlled data/state
 - Extensible via hook-based plugin system
 
-### [Become a Sponsor](https://github.com/sponsors/tannerlinsley/)
-
 ## Previous Versions
 
 ### Version 6
