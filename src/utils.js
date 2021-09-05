@@ -3,11 +3,129 @@ import { defaultColumn, emptyRenderer } from './publicUtils'
 // Find the depth of the columns
 export function findMaxDepth(columns, depth = 0) {
   return columns.reduce((prev, curr) => {
+    // case where a column has columns property
     if (curr.columns) {
       return Math.max(prev, findMaxDepth(curr.columns, depth + 1))
     }
     return depth
   }, 0)
+}
+
+// deep flatten an array
+function flattenDeep(arr, newArr = []) {
+  if (!Array.isArray(arr)) {
+    newArr.push(arr)
+  } else {
+    for (let i = 0; i < arr.length; i += 1) {
+      flattenDeep(arr[i], newArr)
+    }
+  }
+  return newArr
+}
+
+const reOpenBracket = /\[/g
+const reCloseBracket = /\]/g
+
+function makePathArray(obj) {
+  return (
+    flattenDeep(obj)
+      // remove all periods in parts
+      .map(d => String(d).replace('.', '_'))
+      // join parts using period
+      .join('.')
+      // replace brackets with periods
+      .replace(reOpenBracket, '.')
+      .replace(reCloseBracket, '')
+      // split it back out on periods
+      .split('.')
+  )
+}
+
+export function getBy(obj, path, def) {
+  if (!path) {
+    return obj
+  }
+  const cacheKey = typeof path === 'function' ? path : JSON.stringify(path)
+
+  const pathObj =
+    pathObjCache.get(cacheKey) ||
+    (() => {
+      // IIFE avoids polluting *pathObj* variable name
+      const pathObj = makePathArray(path)
+      pathObjCache.set(cacheKey, pathObj)
+      return pathObj
+    })()
+
+  let val
+
+  try {
+    // obj is initial value for *cursor*
+    val = pathObj.reduce((cursor, pathPart) => cursor[pathPart], obj)
+  } catch (e) {
+    // continue regardless of error
+  }
+  return typeof val !== 'undefined' ? val : def
+}
+
+export function getFirstDefined(...args) {
+  for (let i = 0; i < args.length; i += 1) {
+    if (typeof args[i] !== 'undefined') {
+      return args[i]
+    }
+  }
+}
+
+export function assignColumnAccessor(column) {
+  /* example columns
+      {
+        Header: 'Order Date',
+        id: 'date',
+        accessor: d => new Date(d.date),
+        sortType: 'basic',
+        aggregate: 'count',
+        Cell: ({ value }) => (value ? dayjs(value).format('l') : ''),
+        Aggregated: ({ value }) => `${value} Orders`,
+      },
+      {
+        Header: 'Employee',
+        accessor: 'rep',
+        aggregate: 'uniqueCount',
+      },
+    */
+
+  // First check for string accessor
+  let { id, accessor, Header } = column
+
+  if (typeof accessor === 'string') {
+    // if no id is specified, then treat accessor as id
+    id = id || accessor
+    // returns an array like ["some"] or ["some", "some2"]
+    const accessorPath = accessor.split('.')
+    // assign accessor to a fn which takes row as an arg
+    accessor = row => getBy(row, accessorPath)
+  }
+
+  // if accessor is not a string, then id is set to Header
+  if (!id && typeof Header === 'string' && Header) {
+    id = Header
+  }
+
+  if (!id && column.columns) {
+    console.error(column)
+    throw new Error('A column ID (or unique "Header" value) is required!')
+  }
+
+  if (!id) {
+    console.error(column)
+    throw new Error('A column ID (or string accessor) is required!')
+  }
+
+  Object.assign(column, {
+    id,
+    accessor,
+  })
+
+  return column
 }
 
 // Build the visible columns, headers and flat column list
@@ -32,38 +150,6 @@ export function flattenColumns(columns) {
   return flattenBy(columns, 'columns')
 }
 
-export function assignColumnAccessor(column) {
-  // First check for string accessor
-  let { id, accessor, Header } = column
-
-  if (typeof accessor === 'string') {
-    id = id || accessor
-    const accessorPath = accessor.split('.')
-    accessor = row => getBy(row, accessorPath)
-  }
-
-  if (!id && typeof Header === 'string' && Header) {
-    id = Header
-  }
-
-  if (!id && column.columns) {
-    console.error(column)
-    throw new Error('A column ID (or unique "Header" value) is required!')
-  }
-
-  if (!id) {
-    console.error(column)
-    throw new Error('A column ID (or string accessor) is required!')
-  }
-
-  Object.assign(column, {
-    id,
-    accessor,
-  })
-
-  return column
-}
-
 export function decorateColumn(column, userDefaultColumn) {
   if (!userDefaultColumn) {
     throw new Error()
@@ -84,6 +170,8 @@ export function decorateColumn(column, userDefaultColumn) {
   return column
 }
 
+// inputs: allColumns, defaultColumn, additionalHeaderProperties
+// output: headerGroups
 // Build the header groups from the bottom up
 export function makeHeaderGroups(
   allColumns,
@@ -92,12 +180,15 @@ export function makeHeaderGroups(
 ) {
   const headerGroups = []
 
+  // scanColumns and allColumns hold reference to exactly the same array
+  // when scanColumns is later assigned to parentColumns, the reference that scanColumns holds changes
   let scanColumns = allColumns
 
   let uid = 0
   const getUID = () => uid++
 
   while (scanColumns.length) {
+    // inside the while loop, outside the forEach
     // The header group we are creating
     const headerGroup = {
       headers: [],
@@ -106,6 +197,8 @@ export function makeHeaderGroups(
     // The parent columns we're going to scan next
     const parentColumns = []
 
+    // initially checked for each *allColumns* column in the forEach loop
+    // after that it is checked for each *parentColumns* column
     const hasParents = scanColumns.some(d => d.parent)
 
     // Scan each column for parents
@@ -127,10 +220,9 @@ export function makeHeaderGroups(
           }
         } else {
           // If other columns have parents, we'll need to add a place holder if necessary
-          const originalId = `${column.id}_placeholder`
           newParent = decorateColumn(
             {
-              originalId,
+              originalId: `${column.id}_placeholder`,
               id: `${column.id}_placeholder_${getUID()}`,
               placeholderOf: column,
               headers: [column],
@@ -164,39 +256,8 @@ export function makeHeaderGroups(
   return headerGroups.reverse()
 }
 
+// The Map object holds key-value pairs and remembers the original insertion order of the keys.
 const pathObjCache = new Map()
-
-export function getBy(obj, path, def) {
-  if (!path) {
-    return obj
-  }
-  const cacheKey = typeof path === 'function' ? path : JSON.stringify(path)
-
-  const pathObj =
-    pathObjCache.get(cacheKey) ||
-    (() => {
-      const pathObj = makePathArray(path)
-      pathObjCache.set(cacheKey, pathObj)
-      return pathObj
-    })()
-
-  let val
-
-  try {
-    val = pathObj.reduce((cursor, pathPart) => cursor[pathPart], obj)
-  } catch (e) {
-    // continue regardless of error
-  }
-  return typeof val !== 'undefined' ? val : def
-}
-
-export function getFirstDefined(...args) {
-  for (let i = 0; i < args.length; i += 1) {
-    if (typeof args[i] !== 'undefined') {
-      return args[i]
-    }
-  }
-}
 
 export function getElementDimensions(element) {
   const rect = element.getBoundingClientRect()
@@ -316,32 +377,3 @@ export function passiveEventSupported() {
 }
 
 //
-
-const reOpenBracket = /\[/g
-const reCloseBracket = /\]/g
-
-function makePathArray(obj) {
-  return (
-    flattenDeep(obj)
-      // remove all periods in parts
-      .map(d => String(d).replace('.', '_'))
-      // join parts using period
-      .join('.')
-      // replace brackets with periods
-      .replace(reOpenBracket, '.')
-      .replace(reCloseBracket, '')
-      // split it back out on periods
-      .split('.')
-  )
-}
-
-function flattenDeep(arr, newArr = []) {
-  if (!Array.isArray(arr)) {
-    newArr.push(arr)
-  } else {
-    for (let i = 0; i < arr.length; i += 1) {
-      flattenDeep(arr[i], newArr)
-    }
-  }
-  return newArr
-}
